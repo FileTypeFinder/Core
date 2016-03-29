@@ -118,20 +118,20 @@ public final class FilterClassLoader extends ClassLoader {
                     } catch (IllegalAccessException e) {
                         e.printStackTrace();
                     }
+                }
+            }
 
-                    //Check if the parent exist, if not, put the element into the root map
-                    for (Filter filterChild : new ArrayList<Filter>(FILTER_CHILDREN.values())) {
-                        FilterProperties annotation = filterChild.getClass().getAnnotation(FilterProperties.class);
+            //Check if the parent exist, if not, put the element into the root map
+            for (Filter filterChild : new ArrayList<Filter>(FILTER_CHILDREN.values())) {
+                FilterProperties annotation = filterChild.getClass().getAnnotation(FilterProperties.class);
 
-                        String parent = annotation.parent();
+                String parent = annotation.parent();
 
-                        if (!FILTER_CHILDREN.containsKey(parent)) { //Check in the current child list
-                            if (!FILTER_ROOT.containsKey(parent)) {
-                                String simpleName = filterChild.getClass().getSimpleName();
-                                FILTER_ROOT.put(simpleName, filterChild);
-                                FILTER_CHILDREN.remove(simpleName);
-                            }
-                        }
+                if (!FILTER_CHILDREN.containsKey(parent)) { //Check in the current child list
+                    if (!FILTER_ROOT.containsKey(parent)) {
+                        String simpleName = filterChild.getClass().getSimpleName();
+                        FILTER_ROOT.put(simpleName, filterChild);
+                        FILTER_CHILDREN.remove(simpleName);
                     }
                 }
             }
@@ -167,7 +167,7 @@ public final class FilterClassLoader extends ClassLoader {
             return;
         }
 
-        name = name.replaceAll(Pattern.quote(File.separator),"/");
+        name = name.replaceAll(Pattern.quote(File.separator), "/");
 
         if (name.matches(".*(\\/?)filters\\/\\w*\\.class")) {
             byte[] bytes = readInputStreamToBytes(is);
