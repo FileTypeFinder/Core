@@ -17,52 +17,87 @@
 package org.filetypefinder.core;
 
 import java.io.*;
+import java.net.URISyntaxException;
 import java.net.URL;
+import java.security.CodeSource;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * Created by Yannick on 2/16/2016.
  */
 public final class FilterClassLoader extends ClassLoader {
-    private static final String FILE_TYPE_PKG;
     private static final Map<String, Filter> FILTER_ROOT;
     private static final Map<String, Filter> FILTER_CHILDREN;
     private static final FilterClassLoader OUR_INSTANCE;
+    private static final FileFilter CLASS_FILE_FILTER;
 
     static {
-        FILE_TYPE_PKG = "org.filetypefinder.filetype.";
         FILTER_CHILDREN = Collections.synchronizedMap(new HashMap<String, Filter>());
         FILTER_ROOT = Collections.synchronizedMap(new HashMap<String, Filter>());
+        CLASS_FILE_FILTER = new FileFilter() {
+            public boolean accept(File pathname) {
+                return (pathname.getParent().endsWith("filters") && pathname.getName().endsWith(".class")) || pathname.isDirectory();
+            }
+        };
+
         OUR_INSTANCE = new FilterClassLoader();
     }
 
     private FilterClassLoader() {
 
-        URL resources = getClass().getResource("../filetype/");
+        Map<String, byte[]> rawClassMap = new HashMap<String, byte[]>();
 
-        new File(getClass().getClassLoader().getResource("file/test.xml").getFile());
+        CodeSource src = FilterClassLoader.class.getProtectionDomain().getCodeSource();
+        if (src != null) {
+            URL location = src.getLocation();
+            try {
+                ZipInputStream zip = new ZipInputStream(location.openStream());
 
+                ZipEntry nextEntry = zip.getNextEntry();
 
-        if (resources != null) {
+                if (nextEntry != null) { //Executed from a jar
+                    while (nextEntry != null) {
+                        if (!nextEntry.isDirectory()) {
+                            addFiltersToMap(nextEntry.getName(), zip, rawClassMap);
+                        }
 
-            File filetyFolder = new File(resources.getPath());
-
-            File[] fileTypeClasses = filetyFolder.listFiles(new FileFilter() {
-                public boolean accept(File pathname) {
-                    return pathname.getName().endsWith(".class");
-                }
-            });
-
-            if (fileTypeClasses != null) {
-                for (File classFile : fileTypeClasses) {
-                    byte[] bytes = readFileToBytes(classFile);
-
-                    String filename = classFile.getName().split(Pattern.quote("."))[0];
-                    String binaryName = FILE_TYPE_PKG + filename;
-
+                        nextEntry = zip.getNextEntry();
+                    }
+                } else { //Not a jar
                     try {
-                        Class<?> clazz = defineClass(binaryName, bytes, 0, bytes.length);
+                        File dir = new File(location.toURI());
+
+                        List<File> fileByType = findFileByType(dir, CLASS_FILE_FILTER);
+                        if (fileByType != null) {
+                            for (File file : fileByType) {
+                                addFiltersToMap(file.getPath(), new FileInputStream(file), rawClassMap);
+                            }
+                        }
+                    } catch (URISyntaxException e) {
+                        e.printStackTrace();
+                    }
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        if (!rawClassMap.isEmpty()) {
+            for (Map.Entry<String, byte[]> entry : rawClassMap.entrySet()) {
+                Pattern pattern = Pattern.compile("(?<=\\/)\\w*\\.\\w*$"); //Extract the filename
+                Matcher matcher = pattern.matcher(entry.getKey());
+
+                byte[] data = entry.getValue();
+
+                if (matcher.find()) {
+
+                    String filename = matcher.group(0).split("\\.")[0];
+                    try {
+                        Class<?> clazz = defineClass(null, data, 0, data.length);
                         Filter value = (Filter) clazz.newInstance();
 
                         FilterProperties annotation = clazz.getAnnotation(FilterProperties.class);
@@ -83,22 +118,62 @@ public final class FilterClassLoader extends ClassLoader {
                     } catch (IllegalAccessException e) {
                         e.printStackTrace();
                     }
-                }
 
-                //Check if the parent exist, if not, put the element into the root map
-                for (Filter filterChild : new ArrayList<Filter>(FILTER_CHILDREN.values())) {
-                    FilterProperties annotation = filterChild.getClass().getAnnotation(FilterProperties.class);
+                    //Check if the parent exist, if not, put the element into the root map
+                    for (Filter filterChild : new ArrayList<Filter>(FILTER_CHILDREN.values())) {
+                        FilterProperties annotation = filterChild.getClass().getAnnotation(FilterProperties.class);
 
-                    String parent = annotation.parent();
+                        String parent = annotation.parent();
 
-                    if (!FILTER_CHILDREN.containsKey(parent)) { //Check in the current child list
-                        if (!FILTER_ROOT.containsKey(parent)) {
-                            String simpleName = filterChild.getClass().getSimpleName();
-                            FILTER_ROOT.put(simpleName, filterChild);
-                            FILTER_CHILDREN.remove(simpleName);
+                        if (!FILTER_CHILDREN.containsKey(parent)) { //Check in the current child list
+                            if (!FILTER_ROOT.containsKey(parent)) {
+                                String simpleName = filterChild.getClass().getSimpleName();
+                                FILTER_ROOT.put(simpleName, filterChild);
+                                FILTER_CHILDREN.remove(simpleName);
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+
+
+    /**
+     * @param pathname - The root path
+     * @param filter   - The file filter
+     * @return A List<File> containing the file(s)
+     */
+    private List<File> findFileByType(File pathname, FileFilter filter) {
+        if (pathname.isDirectory()) {
+            List<File> files = new ArrayList<File>();
+            for (File f : pathname.listFiles(filter)) {
+                files.addAll(findFileByType(f, filter));
+            }
+            return files;
+        } else {
+            return Collections.singletonList(pathname);
+        }
+    }
+
+    /**
+     * @param name        - The name of the current file
+     * @param is          - The InputStream to read from
+     * @param rawClassMap - The map to add the items
+     */
+    private void addFiltersToMap(String name, InputStream is, Map<String, byte[]> rawClassMap) {
+
+        if (is == null || rawClassMap == null || name == null) {
+            return;
+        }
+
+        name = name.replaceAll(Pattern.quote(File.separator),"/");
+
+        if (name.matches(".*(\\/?)filters\\/\\w*\\.class")) {
+            byte[] bytes = readInputStreamToBytes(is);
+
+            if (bytes != null && bytes.length > 0) {
+                rawClassMap.put(name, bytes);
             }
         }
     }
@@ -108,31 +183,30 @@ public final class FilterClassLoader extends ClassLoader {
     }
 
     /**
-     * @param file - The file to be converted into byte[]
-     * @return A byte[] containing the binary data of the file or Null if the file parameter is Null
+     * @param is - The InputStream to be converted into byte[]
+     * @return A byte[] containing the binary data of the InputStream or Null if the file parameter is Null
      */
-    private static byte[] readFileToBytes(File file) {
-        byte[] bytes = null;
-
-        if (file != null) {
-            try {
-                InputStream is = new FileInputStream(file);
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-
-                for (int i = is.read(); i != -1; i = is.read()) {
-                    baos.write((byte) i);
-                }
-                baos.flush();
-                bytes = baos.toByteArray();
-                is.close();
-            } catch (FileNotFoundException e) {
-                e.printStackTrace();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+    private static byte[] readInputStreamToBytes(InputStream is) {
+        if (is == null) {
+            return null;
         }
 
-        return bytes;
+        ByteArrayOutputStream value = new ByteArrayOutputStream();
+
+        int nRead;
+        byte[] buffer = new byte[8192];
+
+        try {
+            while ((nRead = is.read(buffer, 0, buffer.length)) != -1) {
+                value.write(buffer, 0, nRead);
+            }
+
+            value.flush();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        return value.toByteArray();
     }
 
     /**
